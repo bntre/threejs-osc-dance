@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - additive animation - skinning</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body { font-family: Monospace; margin: 0; overflow: hidden; }
+
+			#threejs-scene {
+				position: fixed;
+				inset: 0;
+				z-index: 1;
+			}
+
+			canvas { display: block; }
+
+			.control-inactive button {
+				color: #888;
+			}
+
+			#strudel {
+				position: fixed;
+				z-index: 10;
+				display: flex; flex-direction: row;
+				height: 100vh;
+			}
+			#strudel .controls {
+				display: flex; flex-direction: column;
+				gap: 6px;
+			}
+			#strudel .controls button {
+				width: 30px;
+				height: 40px;
+			}
+
+		</style>
+	</head>
+	<body>
+		<div id="threejs-scene"></div>
+
+		<div id="strudel">
+			<div class="controls">
+				<button id="play-btn">▶</button>
+				<button id="stop-btn">■</button>
+			</div>
+			<strudel-editor id="repl"></strudel-editor>
+		</div>
+
+		<script type="importmap">
+			{
+				"imports": {
+					"three":         "https://unpkg.com/three@0.180.0/build/three.module.js",
+					"three/addons/": "https://unpkg.com/three@0.180.0/examples/jsm/"
+				}
+			}
+		</script>
+		<script src="https://unpkg.com/@strudel/repl@latest"></script>
+
+		<style>
+			/* override REPL style https://codemirror.net/examples/styling/ */
+			:root { --background: transparent !important; }
+			.cm-editor { font-family: "Consolas"; font-size: 14px; height: 100vh; }
+			.cm-scroller { scrollbar-width: none; }
+		</style>
+
+		<script type="module">
+
+			import * as THREE from 'three';
+
+			import Stats from 'three/addons/libs/stats.module.js';
+			import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+			import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+			import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+
+			import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+
+			import { HEAD,ARMS,LEGS } from './constants.js';
+
+			//const setupModulePath = './setup_xbot.js';
+			const setupModulePath = './setup_michelle.js';
+			const _setupModule = await import(setupModulePath);
+
+			let _scene, _renderer, _camera, _stats, _clock;
+			let _mixer;
+
+			//----------------------------------------------------
+			/*
+			Setup : ModelSetup
+				defaultBaseMove: string
+				baseMoves: string -> BaseMove
+				defaultReference: Time
+				additiveMoves: string -> AdditiveMove
+				retarget: Retarget
+			ModelSetup
+				url: string
+				type: string          # gltf | fbx
+				scale: float
+			Retarget : ModelSetup
+				options: RetargetOptions  # options for SkeletonUtils.retargetClip https://github.com/mrdoob/three.js/blob/master/examples/jsm/utils/SkeletonUtils.js
+
+			Move
+				name: string
+				clip: string          # name of AnimationClip
+				beats: float          # length of the move in beats; default is _currentBpc
+				loop: string          # once | repeat | pingpong (default 'repeat' for full, 'pingpong' for slice)
+				phase: float          # starting phase 0..1
+				cut: int[2|3]         # [from, to] | [from, to, denominator] - helper for subclip
+				tracks: int|string    # track filter: integer constants or strings like 'Hips|*Leg|*Foot|*Toe*'
+				_clip: AnimationClip
+				_startTime: float     # phase * duration
+				_control: GUI button or slider
+			BaseMove : Move           # always played with weight 1; using crossfade (it changes .enable)
+				_actions: AnimationAction[2]        # two layers
+			AdditiveMove : Move       # always played and enabled; changing weight (weight > 0)
+				ref: Time             # time | [time, denominator] - reference time to make additive (default 0)
+				_action: AnimationAction
+			Time : int|int[2]       # time | [time, denominator] - time reference
+			*/
+			
+			const _devMode = 0;
+
+			async function loadModels(setup) {
+
+				const loaderConfs = {
+					'gltf': { factory: () => new GLTFLoader(), getContent: (gltf) => [gltf.scene, gltf.animations] },
+					'fbx':  { factory: () => new FBXLoader(),  getContent: (fbx)  => [fbx,        fbx.animations ] },
+				};
+
+				function promiseLoad(model) {
+					if (!model || !model.url) return Promise.resolve(); // nothing to do
+					const conf = loaderConfs[model.type];
+					if (!conf) return Promise.reject(new Error("No loader for type " + model.type));
+					const loader = conf._loader ??= conf.factory();
+					return new Promise( ( resolve, reject ) => {
+						loader.load(
+							model.url,
+							(data) => {
+								const [m, a] = conf.getContent(data);
+								model._model      = m; // save content to model setup
+								model._animations = a;
+								resolve();
+							},
+							undefined,
+							reject
+						);
+					} )
+				}
+
+				await Promise.all( [
+					promiseLoad(setup),
+					promiseLoad(setup.retarget),
+				] );
+
+			}
+
+			const _trackFilters = [
+				{ bit: HEAD, filter: 'Neck|Head*' },
+				{ bit: ARMS, filter: 'Spine*|*Shoulder|*Arm|*Hand*' },
+				{ bit: LEGS, filter: 'Hips|*Leg|*Foot|*Toe*' },
+			];
+
+			function initMove(setup, name, move, clip, makeAdditive = false) {
+
+				// 1. filter clip tracks
+				if (move.tracks) {
+					if (Number.isInteger(move.tracks)) { // convert to string filter
+						move.tracks = _trackFilters
+							.filter(f => move.tracks & f.bit)
+							.map(f => f.filter)
+							.join('|');
+					}
+					const pattern = move.tracks.replaceAll('*', '\\w*');
+					const re = new RegExp(`(${pattern})\\..+`);
+					clip.tracks = clip.tracks.filter(track => re.test(track.name));
+				}
+
+				// 2. retarget clip
+				if (setup.retarget) {
+					const options = { ...setup.retarget.options };
+					if (clip.duration === 0) { // single frame clip - imitate 2 frames
+						clip.duration = 2/30;
+						options.fps = 30;
+					}
+					clip = SkeletonUtils.retargetClip(
+						setup.retarget._skin,
+						setup._skeleton,
+						clip,
+						options
+					);
+				}
+
+				// 3. make additive
+				if (makeAdditive) {
+					let refTime = 0;
+					const ref = move.ref ?? setup.defaultReference ?? 0;
+					if (ref) {
+						if (ref.length == 2) {
+							refTime = clip.duration * ref[0] / ref[1];
+						} else {
+							refTime = ref;
+						}
+					}
+					clip = THREE.AnimationUtils.makeClipAdditive( clip.clone(), refTime, clip, 1.0 );
+				}
+
+				// 4. cut the clip
+				if (move.cut) {
+					let startTime = 0, endTime = 0;
+					if (move.cut.length == 2) {
+						startTime = move.cut[0];
+						endTime   = move.cut[1];
+					} else if (move.cut.length == 3) {
+						startTime = clip.duration * move.cut[0] / move.cut[2];
+						endTime   = clip.duration * move.cut[1] / move.cut[2];
+					}
+
+					if (move.loop == 'repeat') {
+						clip = subclipLoop(clip, name, startTime, endTime, 0.2, 30);
+					} else {
+						clip = THREE.AnimationUtils.subclip(clip, name, startTime, endTime, 1.0); // fps is used just as scale there
+					}
+				}
+
+				move._clip = clip;
+				move._startTime = (move.phase ?? 0) * clip.duration;
+
+				// common properties
+				move.name  = name;
+				move.loop  = move.loop  ?? (move.cut ? 'pingpong' : 'repeat');
+				move.beats = move.beats ?? _currentBpc;
+			}
+
+			function initSetup(setup) {
+
+				if (setup.retarget) {
+					const getSkin = m => m.getObjectByProperty('isSkinnedMesh', true);
+					setup._skeleton      = getSkin(setup._model).skeleton;
+					setup.retarget._skin = getSkin(setup.retarget._model);
+				}
+
+				_mixer = new THREE.AnimationMixer( setup.retarget ? setup.retarget._skin : setup._model );
+
+				const modelSetup = setup.retarget ?? setup;
+				const model = modelSetup._model;
+
+				if (modelSetup.scale) {
+					model.scale.setScalar( modelSetup.scale );
+				}
+				model.traverse( ( obj ) => { 
+					if ( obj.isMesh ) obj.castShadow = true;
+				} );
+
+				_scene.add( model );
+
+				if (1) { // _devMode helpers
+					if (_devMode) { // add original animations as moves
+						for (const clip of setup._animations) {
+							setup.baseMoves['_' + clip.name] = {
+								clip: clip.name,
+								beats: Math.max(1, clip.duration * 4),
+							};
+						}
+					}
+					if (!_devMode) { // remove "dev" moves (starting with '_')
+						for (const name in setup.baseMoves) {
+							if (name.startsWith('_')) delete setup.baseMoves[name];
+						}
+						for (const name in setup.additiveMoves) {
+							if (name.startsWith('_')) delete setup.additiveMoves[name];
+						}
+					}
+				}
+
+				const loopModes = {
+					'once':     THREE.LoopOnce,
+					'repeat':   THREE.LoopRepeat,
+					'pingpong': THREE.LoopPingPong,
+				};
+
+				const allClips = Object.fromEntries(setup._animations.map(a => [a.name, a]));
+
+				// Base moves
+				for (const name in setup.baseMoves) {
+					const move = setup.baseMoves[name];
+					let clip = allClips[move.clip];
+					if (clip) {
+						clip = clip.clone();
+						initMove(setup, name, move, clip);
+						//
+						move._actions = [];
+						for (let i = 0; i < 2; ++i) {
+							const action = _mixer.clipAction( move._clip.clone() ); // clone: avoid cached action
+							action.loop = loopModes[move.loop] ?? THREE.LoopRepeat;
+							action.enabled = false;
+							action.play();
+							move._actions.push(action);
+						}
+					} else {
+						console.error('Unknown clip:', move.clip);
+					}
+				}
+
+				// Additive moves
+				for (const name in setup.additiveMoves) {
+					const move = setup.additiveMoves[name];
+					let clip = allClips[move.clip];
+					if (clip) {
+						clip = clip.clone();
+						initMove(setup, name, move, clip, true);
+						//
+						move._action = _mixer.clipAction( move._clip );
+						move._action.loop = loopModes[move.loop] ?? THREE.LoopRepeat;
+						move._action.weight = 0;
+						move._action.time = move._startTime;
+						move._action.play();
+					} else {
+						console.error('Unknown clip:', move.clip);
+					}
+				}
+
+				createPanel();
+
+				updateAdditiveActionTimescale();
+				startBaseMove(setup.defaultBaseMove ?? 'None');
+			}
+
+			let _setup;
+			let _currentBaseMove = ''; // may be 'None'
+			let _currentBaseLayer = 0; // switching 0|1
+			
+			let _currentBpc = 4; // beats per cycle
+			let _currentCps = 1.0; // cycles per second
+
+			const _panelSettings = {};
+
+			let _pauseMode = false; // pause when using "Clip phase" slider
+
+			//const _wsOSC = createOscListener();
+
+			init();
+
+			async function init() {
+
+				const container = document.getElementById('threejs-scene');
+				_clock = new THREE.Clock();
+
+				_scene = new THREE.Scene();
+				_scene.background = new THREE.Color( 0x050505 ); 
+				_scene.fog = new THREE.Fog( 0x050505, 5, 25 );
+
+				const hemiLight = new THREE.HemisphereLight( 0x4433aa, 0x000000, 0.5 );
+				hemiLight.position.set( 0, 20, 0 );
+				_scene.add( hemiLight );
+
+				// Add a colorful SpotLight (The "Hero" light)
+				const discoLight = new THREE.SpotLight( 0xffff99, 500 ); // Hot pink 0xff99ff
+				discoLight.position.set( 5, 15, 5 );
+				discoLight.angle = 0.15;
+				discoLight.penumbra = 0.75;
+				discoLight.castShadow = true;
+				_scene.add( discoLight );
+
+				// ground
+				const mesh = new THREE.Mesh( new THREE.PlaneGeometry( 100, 100 ), new THREE.MeshPhongMaterial( { color: 0xcbcbcb, depthWrite: false } ) );
+				mesh.rotation.x = - Math.PI / 2;
+				mesh.receiveShadow = true;
+				_scene.add( mesh );
+
+				// model
+				_setup = _setupModule.createSetup();
+				await loadModels(_setup);
+				initSetup(_setup);
+
+				// renderer
+				const [W, H] = [window.innerWidth, window.innerHeight];
+				_renderer = new THREE.WebGLRenderer( { antialias: true } );
+				_renderer.setPixelRatio( window.devicePixelRatio );
+				_renderer.setSize( W, H );
+				_renderer.setAnimationLoop( animate );
+				_renderer.shadowMap.enabled = true;
+				container.appendChild( _renderer.domElement );
+
+				// camera
+
+				_camera = new THREE.PerspectiveCamera( 45, W/H, 1, 100 );
+				_camera.position.set( -1, 2, 3 );
+				_camera.setViewOffset(W,H, -W/6,0, W,H);
+
+				const controls = new OrbitControls( _camera, _renderer.domElement );
+				controls.enablePan = false;
+				controls.enableZoom = false;
+				controls.target.set( 0, 1, 0 );
+				controls.update();
+
+				if (_devMode) {
+					_stats = new Stats();
+					container.appendChild( _stats.dom );
+				}
+
+				window.addEventListener( 'resize', onWindowResize );
+
+			}
+
+			function createPanel() {
+
+				const panel = new GUI( { width: 180 } );
+
+				const folder1 = panel.addFolder( 'Base Actions' );
+				const folder2 = panel.addFolder( 'Additive Action Weights' );
+				const folder3 = panel.addFolder( 'General Speed' );
+
+				_panelSettings['modify time scale'] = 1.0;
+				_panelSettings['clip phase'] =  0.0;
+
+				for ( const name in _setup.baseMoves ) {
+
+					const move = _setup.baseMoves[name];
+
+					_panelSettings[ name ] = function () {
+						
+						if (_pauseMode) {
+							_pauseMode = false;
+							pauseBaseMoves(false);
+						}
+
+						startBaseMove(name);
+					};
+
+					move._control = folder1.add( _panelSettings, name );
+				}
+
+				// "Clip phase" slider
+				folder1.add( _panelSettings, 'clip phase', 0.0, 1.0, 0.005 ).listen().onChange( function ( phase ) {
+					if (!_pauseMode) {
+						_pauseMode = true;
+						pauseBaseMoves(true);
+					}
+					const move = _setup.baseMoves[_currentBaseMove];
+					if (move) {
+						const action = move._actions[_currentBaseLayer];
+						if (action) {
+							const d = move._clip.duration;
+							action.time = (move._startTime + d * phase) % d;
+							action._loopCount = -1; // reset pingpong phase
+						}
+					}
+
+				} );
+
+				for ( const name in _setup.additiveMoves ) {
+					
+					const move = _setup.additiveMoves[name];
+
+					_panelSettings[ name ] = 0.0;
+
+					move._control = folder2.add( _panelSettings, name, 0.0, 1.0, 0.01 ).listen().onChange( function ( weight ) {
+
+						move._action.weight = weight; // _effectiveWeight will be updated on .update
+
+					} );
+
+				}
+				//folder2.close();
+				folder3.add( _panelSettings, 'modify time scale', 0.0, 4.0, 0.01 ).onChange( function ( speed ) {
+					setGlobalSpeed(speed);
+				} );
+				folder3.close();
+			}
+
+			function setGlobalSpeed(speed) {
+				_mixer.timeScale = speed;
+			}
+
+			function calculateTimescale(move) { // scale the clip to play fully in 'beatCount' beats (according to current bps)
+				if (!move._clip) return 1.0; // not loaded yet
+				return move._clip.duration * _currentBpc / move.beats * _currentCps;
+			}
+
+			function startBaseMove( moveName ) { // called by GUI button or by OSC
+
+				const duration = 0.5;
+				
+				const move0 = _setup.baseMoves[_currentBaseMove];
+				const move1 = _setup.baseMoves[moveName        ];
+				
+				const action0 = move0?._actions[_currentBaseLayer    ];
+				const action1 = move1?._actions[_currentBaseLayer ^ 1];
+
+				if (action0) {
+					action0.fadeOut( duration );
+				}
+				if (action1) {
+					action1.enabled = true;
+					action1.timeScale = calculateTimescale(move1);
+					action1.time = move1._startTime;
+					action1._loopCount = -1; // reset pingpong phase
+					//console.log("Action started immediately:", action1.getClip().name, "phase:", phase);
+					action1.fadeIn( duration );
+				}
+
+				_currentBaseMove = moveName;
+				_currentBaseLayer ^= 1;
+
+				// Update GUI
+				updateBaseMoveButtons();
+			}
+
+			function changeAdditiveMove( moveNamePrefix, weight ) { // called by OSC
+
+				const duration = 0.5;
+
+				for (const name in _setup.additiveMoves) {
+					if (name.startsWith(moveNamePrefix)) {
+						const move = _setup.additiveMoves[name];
+						weight = Math.max(0.01, weight); //!!! never fade to zero (it disables the action and makes out of sync)
+						// like fadeIn but starting from (current) effective weight
+						const ew = move._action.getEffectiveWeight();
+						move._action.weight = weight; // destination weight = coefficient
+						move._action._scheduleFading( duration, ew / weight, 1.0 );
+
+						// Update GUI
+						updateAdditiveMoveSlider(move, weight);
+					}
+				}
+
+			}
+
+			function updateAdditiveActionTimescale() {
+				for (const name in _setup.additiveMoves) {
+					const move = _setup.additiveMoves[name];
+					move._action.timeScale = calculateTimescale(move);
+					//console.log("updateAdditiveActionTimescale", move.clip, move._clip.duration, move._action.timeScale);
+				}
+			}
+
+			function updateAdditiveActionPhase(phase) {
+				for (const name in _setup.additiveMoves) {
+					const move = _setup.additiveMoves[name];
+					const d = move._clip.duration;
+					move._action.time = (move._startTime + d * phase) % d;
+				}
+			}
+
+			function pauseBaseMoves(pause = true) {
+				for (const name in _setup.baseMoves) {
+					const move = _setup.baseMoves[name];
+					move._actions[0].paused = pause;
+					move._actions[1].paused = pause;
+				}
+			}
+
+			function updateBaseMoveButtons() {
+				for (const name in _setup.baseMoves) {
+					_setup.baseMoves[name]._control.domElement
+						.classList[name === _currentBaseMove ? 'remove' : 'add']('control-inactive');
+				}
+			}
+
+			function updateAdditiveMoveSlider(move, weight) {
+				_panelSettings[move.name] = weight;
+				move._control.updateDisplay();
+			}
+
+			function onWindowResize() {
+
+				_camera.aspect = window.innerWidth / window.innerHeight;
+				_camera.updateProjectionMatrix();
+
+				_renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			function animate() {
+
+				const delta = _clock.getDelta();
+
+				_mixer.update( delta );
+
+				_renderer.render( _scene, _camera );
+
+				if (_stats) _stats.update();
+
+			}
+
+			function handleOscMessage(msg) {
+
+				function _flash() { //!!! temp
+					_scene.background = new THREE.Color( 0xffffff );
+					setTimeout(() => {
+						_scene.background = new THREE.Color( 0xa0a0a0 );
+					}, 100);
+				}
+
+				//console.log("OSC msg", msg);
+//				_flash(); //!!! temp
+				// 
+				if ('cps' in msg) {
+					const cps = msg['cps'];
+					if (_currentCps !== cps) {
+						_currentCps = cps;
+						updateAdditiveActionTimescale();
+					}
+				}
+				// .as('speed | phase | base | add')
+				if ('speed' in msg) {
+					const speed = msg['speed']['n'];
+					console.log("OSC set speed", speed);
+					setGlobalSpeed(speed);
+				}
+				if ('phase' in msg) {
+					const phase = msg['phase']['n'];
+					console.log("OSC set phase", phase);
+					updateAdditiveActionPhase(phase);
+				}
+				if ('base' in msg) {
+					const name = msg['base']['s'];
+					console.log("OSC base move", name);
+					startBaseMove(name);
+				}
+				if ('add' in msg) {
+					const namePrefix = msg['add']['s'] ?? "";
+					const weight     = msg['add']['n'] ?? 1;
+					console.log("OSC additive move", namePrefix + "*", weight);
+					changeAdditiveMove(namePrefix, weight);
+				}
+			}
+
+			/*
+			function createOscListener(address = "ws://localhost:8080") {
+				
+				function arrToObj(arr) {
+					return arr.reduce((acc, val, i) => {
+						if (i % 2 === 0) acc[val] = arr[i + 1];
+						return acc;
+					}, {});
+				}
+				
+				const ws = new WebSocket(address);
+				ws.onopen = () => {
+					console.log("WS OSC connected");
+				};
+				ws.onmessage = async (event) => {
+					const text = typeof event.data === "string"
+						? event.data
+						: await event.data.text();
+
+					let msg;
+					try {
+						msg = JSON.parse(text);
+					} catch (e) {
+						console.warn("Not JSON:", text);
+						return;
+					}
+					//console.log("Json message got:", event.origin, msg);
+
+					if (msg.address === "/dirt/play") {
+						//console.log("OSC got:", msg.args);
+
+						const args = arrToObj(msg.args);
+						handleOscMessage(args);
+					}
+				};
+				return ws;
+			}
+			*/
+
+			function subclipLoop(sourceClip, name, startTime, endTime, fadePart = 0.1, fps = 30) {
+
+				//              startTime                      endTime
+				//                  |           outLen            |
+				//        | fadeLen |      baseLen      | fadeLen |
+				//    startTime1                     endTime1
+
+				const outLen = endTime - startTime;
+				if (outLen <= 0) throw new Error('subclipLoop: endTime must be > startTime');
+
+				const fadeLen = outLen * fadePart;  // crossfade part
+				const baseLen = outLen - fadeLen;  // base part
+				const startTime1 = startTime - fadeLen;
+				const endTime1   = endTime   - fadeLen;
+
+				// wrapping times into clip duration
+				const clipLen = sourceClip.duration;
+				const wrapTime = (t) => ((t % clipLen) + clipLen) % clipLen;
+
+				const outTimes = []; // [0, outLen]
+				const dt = 1 / fps;
+				for (let t = 0; t < outLen; t += dt) {
+					outTimes.push(t);
+				}
+				outTimes.push(outLen);
+
+				// Quaternion helpers
+				const q0 = new THREE.Quaternion();
+				const q1 = new THREE.Quaternion();
+				const qV = new THREE.Quaternion();
+
+				// Create new tracks
+				const newTracks = sourceClip.tracks.map((track) => {
+
+					const valueSize = track.getValueSize();
+					const isQuaternion = track.ValueTypeName === 'quaternion' && valueSize === 4;
+
+					if (!Number.isFinite(valueSize) || valueSize <= 0) {
+						throw new Error(`subclipLoop: unsupported track value size for ${track.name}`);
+					}
+
+					// create interpolant
+					const interpolant = track.createInterpolant();
+					const getValue = (t, vOut) => {
+						t = wrapTime(t);
+						vOut.set(interpolant.evaluate(t));
+					}
+					const v0 = new Float32Array(valueSize); // result buffers
+					const v1 = new Float32Array(valueSize);
+
+					// fill values
+					const values = new Float32Array(outTimes.length * valueSize);					
+					for (let i = 0; i < outTimes.length; i++) {
+						const tOut = outTimes[i]; // [0, outLen]
+						const vi = i * valueSize;
+
+						if (tOut <= baseLen) {
+							// Base part
+							getValue(startTime + tOut, v0);
+							values.set(v0, vi);
+						} else {
+							// Crossfade part
+							const t = tOut - baseLen; // [0, fadeLen]
+							const k = t / fadeLen; // 0..1
+
+							getValue(endTime1   + t, v0);  // fade out
+							getValue(startTime1 + t, v1);  // fade in
+
+							if (isQuaternion) {
+								q0.set(v0[0], v0[1], v0[2], v0[3]).normalize();
+								q1.set(v1[0], v1[1], v1[2], v1[3]).normalize();
+								qV.slerpQuaternions(q0, q1, k).normalize();
+								qV.toArray(values, vi);
+							} else {
+								// Linear blend for numeric tracks (number, vector, color, etc.)
+								for (let j = 0; j < valueSize; j++) {
+									values[vi + j] = THREE.MathUtils.lerp(v0[j], v1[j], k);
+								}
+							}
+						}
+					}
+
+					return new track.constructor(track.name, outTimes, values);
+				});
+
+				const clip = new THREE.AnimationClip(name, outLen, newTracks);
+
+				clip.blendMode = sourceClip.blendMode;
+
+				return clip;
+			}
+
+
+			// Strudel setup
+			const _strudelSongPath = './strudel_smarra.js';
+
+			function danceOscTrigger(hap, currentTime, cps = 1, targetTime) {
+				const msg = { cps, ...hap.value };
+				//console.log("danceOscTrigger called from Strudel:", hap, msg);
+				handleOscMessage(msg);
+			};
+			window.danceOsc = (pat) => pat.onTrigger(danceOscTrigger);
+
+			customElements.whenDefined('strudel-editor').then(async () => {
+				const replElement = document.getElementById('repl');
+				document.getElementById('play-btn').addEventListener('click', () => replElement.editor.evaluate());
+				document.getElementById('stop-btn').addEventListener('click', () => replElement.editor.stop());
+
+				let code = await fetch(_strudelSongPath).then(r => r.text());
+
+				// @strudel/repl has no .osc support, so we register our custom .osc handler
+				code = "register('osc', window.danceOsc)\n\n" + code;
+
+				replElement.editor.setCode(code);
+				replElement.editor.editor.focus();
+			});
+
+
+		</script>
+
+	</body>
+</html>
