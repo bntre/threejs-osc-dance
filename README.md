@@ -3,7 +3,7 @@
 This is a web-based proof-of-concept for controlling character dance animations using OSC-like messages.  
 It is designed with livecoding workflows in mind.
 
-**Demo video**: https://www.youtube.com/watch?v=AAAAAAAAAAA
+**Demo video**: https://www.youtube.com/watch?v=24Vd_2r3LPM
 
 **Try it live**: https://bntre.github.io/threejs-osc-dance/
 
@@ -38,7 +38,7 @@ There are two types of moves:
 Moves can also be split by **animation tracks**, allowing partial-body control (e.g. HEAD, ARMS, LEGS).  
 This makes it possible to combine different motions across body parts in a modular way.
 
-Moves are created using the utility function [`subclipLoop`](index.html#L670) that:
+Moves are created using the utility function [`subclipLoop`](index.html#L638) that:
 - resamples animation clips to a specified FPS
 - applies crossfading at the clip edges, resulting in seamless looping motion segments
 
