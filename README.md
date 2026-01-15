@@ -15,6 +15,14 @@ The main idea of this project is to control character dancing by mixing small an
 
 Character animations are split into short, named segments and converted into seamless loops.
 
+Dancing is controlled via **Strudel** (https://strudel.cc).
+
+Animation retargeting to a custom **Ready Player Me** avatar is supported.
+
+## Moves and scene setup
+
+Character setup and animation configuration are defined in a separate `.js` file (see [setup_michelle.js](setup_michelle.js)).
+
 There are two types of moves:
 
 1. **Base moves**
@@ -27,13 +35,29 @@ There are two types of moves:
    - Each move has a controllable weight
    - Additive moves are blended on top of the current base move
 
-Dancing is controlled via **Strudel** (https://strudel.cc)
+Moves can also be split by **animation tracks**, allowing partial-body control (e.g. HEAD, ARMS, LEGS).  
+This makes it possible to combine different motions across body parts in a modular way.
 
-Animation retargeting to a custom **Ready Player Me** avatar is supported
+Moves are created using the utility function [`subclipLoop`](index.html#L670) that:
+- resamples animation clips to a specified FPS
+- applies crossfading at the clip edges, resulting in seamless looping motion segments
 
-Character setup and animation configuration are defined in a separate `.js` file (e.g. [setup_michelle.js](setup_michelle.js))
 
----
+## Live control from Strudel
+
+Moves and global parameters are controlled using Strudel calls:
+
+ * ```s("sway").as("base")``` - start a base move
+
+ * ```s("hands").n("<.4 .6 .8 1>").as("add")``` - control additive move weights (using a mask, e.g. "hands*")
+
+ * ```n("2").as("speed")``` - change global animation speed
+
+ * ```n("0").as("phase")``` - change phase of all additive moves (primarily used for reset)
+
+ * ```setcpm(80)``` - tempo control also affects animation playback
+
+See demo dance script as example: [strudel_smarra.js#L32](strudel_smarra.js#L32)
 
 ## Control modes / branches
 
@@ -43,8 +67,7 @@ The project has two main branches with different control setups.
 
 - The **Strudel REPL** is embedded directly into the Three.js scene page
 - `@strudel/repl` does not provide native OSC support, so a custom OSC handler is implemented and handled directly inside the Three.js scene
-
-This mode is fully self-contained in the browser.
+- This mode is fully self-contained in the browser.
 
 ### 2. `separate` branch
 
@@ -53,7 +76,9 @@ This mode is fully self-contained in the browser.
 - Native OSC support from Strudel is used
 - A **WebSocket broadcast server** (Node.js or Python) is required to forward OSC messages to the Three.js page
 
-This mode is closer to a real OSC-based livecoding setup.
+In both control modes, OSC messages handled by the animation scene are not using the binary OSC format defined by the official protocol  
+(see: https://en.wikipedia.org/wiki/Open_Sound_Control). Instead, messages are currently exchanged as JSON-based structures that resemble OSC semantics but are not yet encoded or decoded into binary OSC packets.  
+This approach simplifies experimentation and browser-side handling and may be replaced by full binary OSC support in the future.
 
 ---
 
