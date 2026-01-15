@@ -87,38 +87,6 @@
 			let _mixer;
 
 			//----------------------------------------------------
-			/*
-			Setup : ModelSetup
-				defaultBaseMove: string
-				baseMoves: string -> BaseMove
-				defaultReference: Time
-				additiveMoves: string -> AdditiveMove
-				retarget: Retarget
-			ModelSetup
-				url: string
-				type: string          # gltf | fbx
-				scale: float
-			Retarget : ModelSetup
-				options: RetargetOptions  # options for SkeletonUtils.retargetClip https://github.com/mrdoob/three.js/blob/master/examples/jsm/utils/SkeletonUtils.js
-
-			Move
-				name: string
-				clip: string          # name of AnimationClip
-				beats: float          # length of the move in beats; default is _currentBpc
-				loop: string          # once | repeat | pingpong (default 'repeat' for full, 'pingpong' for slice)
-				phase: float          # starting phase 0..1
-				cut: int[2|3]         # [from, to] | [from, to, denominator] - helper for subclip
-				tracks: int|string    # track filter: integer constants or strings like 'Hips|*Leg|*Foot|*Toe*'
-				_clip: AnimationClip
-				_startTime: float     # phase * duration
-				_control: GUI button or slider
-			BaseMove : Move           # always played with weight 1; using crossfade (it changes .enable)
-				_actions: AnimationAction[2]        # two layers
-			AdditiveMove : Move       # always played and enabled; changing weight (weight > 0)
-				ref: Time             # time | [time, denominator] - reference time to make additive (default 0)
-				_action: AnimationAction
-			Time : int|int[2]       # time | [time, denominator] - time reference
-			*/
 			
 			const _devMode = 0;
 
@@ -586,6 +554,7 @@
 			}
 
 			function handleOscMessage(msg) {
+				//console.log("OSC msg", msg);
 
 				function _flash() { //!!! temp
 					_scene.background = new THREE.Color( 0xffffff );
@@ -593,10 +562,9 @@
 						_scene.background = new THREE.Color( 0xa0a0a0 );
 					}, 100);
 				}
+				if (_devMode) _flash(); //!!! temp
 
-				//console.log("OSC msg", msg);
-//				_flash(); //!!! temp
-				// 
+				// changed by setcpm(..) call
 				if ('cps' in msg) {
 					const cps = msg['cps'];
 					if (_currentCps !== cps) {
