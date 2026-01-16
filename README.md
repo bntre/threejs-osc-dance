@@ -3,9 +3,13 @@
 This is a web-based proof-of-concept for controlling character dance animations using OSC-like messages.  
 It is designed with livecoding workflows in mind.
 
+**Try it live**: https://bntre.github.io/threejs-osc-dance/
+
 **Demo video**: https://www.youtube.com/watch?v=24Vd_2r3LPM
 
-**Try it live**: https://bntre.github.io/threejs-osc-dance/
+<a href="https://www.youtube.com/watch?v=24Vd_2r3LPM">
+ <img src="https://img.youtube.com/vi/24Vd_2r3LPM/maxresdefault.jpg" width="600" alt="Video cover"/>
+</a>
 
 ---
 
