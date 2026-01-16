@@ -39,14 +39,6 @@
 	<body>
 		<div id="threejs-scene"></div>
 
-		<div id="strudel">
-			<div class="controls">
-				<button id="play-btn">▶</button>
-				<button id="stop-btn">■</button>
-			</div>
-			<strudel-editor id="repl"></strudel-editor>
-		</div>
-
 		<script type="importmap">
 			{
 				"imports": {
@@ -55,14 +47,6 @@
 				}
 			}
 		</script>
-		<script src="https://unpkg.com/@strudel/repl@1.2.7"></script>
-
-		<style>
-			/* override REPL style https://codemirror.net/examples/styling/ */
-			:root { --background: transparent !important; }
-			.cm-editor { font-family: "Consolas"; font-size: 14px; height: 100vh; }
-			.cm-scroller { scrollbar-width: none; }
-		</style>
 
 		<script type="module">
 
@@ -306,7 +290,7 @@
 
 			let _pauseMode = false; // pause when using "Clip phase" slider
 
-			//const _wsOSC = createOscListener();
+			const _wsOSC = createOscListener();
 
 			init();
 
@@ -316,20 +300,25 @@
 				_clock = new THREE.Clock();
 
 				_scene = new THREE.Scene();
-				_scene.background = new THREE.Color( 0x050505 ); 
-				_scene.fog = new THREE.Fog( 0x050505, 5, 25 );
+				_scene.background = new THREE.Color( 0xa0a0a0 );
+				_scene.fog = new THREE.Fog( 0xa0a0a0, 10, 50 );
 
-				const hemiLight = new THREE.HemisphereLight( 0x4433aa, 0x000000, 0.5 );
+
+				const hemiLight = new THREE.HemisphereLight( 0xffffff, 0x8d8d8d, 3 );
 				hemiLight.position.set( 0, 20, 0 );
 				_scene.add( hemiLight );
 
-				// Add a colorful SpotLight (The "Hero" light)
-				const discoLight = new THREE.SpotLight( 0xffff99, 500 ); // Hot pink 0xff99ff
-				discoLight.position.set( 5, 15, 5 );
-				discoLight.angle = 0.15;
-				discoLight.penumbra = 0.75;
-				discoLight.castShadow = true;
-				_scene.add( discoLight );
+				const dirLight = new THREE.DirectionalLight( 0xffffff, 3 );
+				dirLight.position.set( 3, 10, 10 );
+				dirLight.castShadow = true;
+				dirLight.penumbra = 0.5; //!!!
+				dirLight.shadow.camera.top = 2;
+				dirLight.shadow.camera.bottom = - 2;
+				dirLight.shadow.camera.left = - 2;
+				dirLight.shadow.camera.right = 2;
+				dirLight.shadow.camera.near = 0.1;
+				dirLight.shadow.camera.far = 40;
+				_scene.add( dirLight );
 
 				// ground
 				const mesh = new THREE.Mesh( new THREE.PlaneGeometry( 100, 100 ), new THREE.MeshPhongMaterial( { color: 0xcbcbcb, depthWrite: false } ) );
@@ -352,10 +341,9 @@
 				container.appendChild( _renderer.domElement );
 
 				// camera
-
 				_camera = new THREE.PerspectiveCamera( 45, W/H, 1, 100 );
 				_camera.position.set( -1, 2, 3 );
-				_camera.setViewOffset(W,H, -W/6,0, W,H);
+				//_camera.setViewOffset(W,H, -W/6,0, W,H);
 
 				const controls = new OrbitControls( _camera, _renderer.domElement );
 				controls.enablePan = false;
@@ -374,7 +362,7 @@
 
 			function createPanel() {
 
-				const panel = new GUI( { width: 180 } );
+				const panel = new GUI( { width: 280 } );
 
 				const folder1 = panel.addFolder( 'Base Actions' );
 				const folder2 = panel.addFolder( 'Additive Action Weights' );
@@ -596,7 +584,6 @@
 				}
 			}
 
-			/*
 			function createOscListener(address = "ws://localhost:8080") {
 				
 				function arrToObj(arr) {
@@ -633,7 +620,6 @@
 				};
 				return ws;
 			}
-			*/
 
 			function subclipLoop(sourceClip, name, startTime, endTime, fadePart = 0.1, fps = 30) {
 
@@ -726,32 +712,6 @@
 
 				return clip;
 			}
-
-
-			// Strudel setup
-			const _strudelSongPath = './strudel_smarra.js';
-
-			function danceOscTrigger(hap, currentTime, cps = 1, targetTime) {
-				const msg = { cps, ...hap.value };
-				//console.log("danceOscTrigger called from Strudel:", hap, msg);
-				handleOscMessage(msg);
-			};
-			window.danceOsc = (pat) => pat.onTrigger(danceOscTrigger);
-
-			customElements.whenDefined('strudel-editor').then(async () => {
-				const replElement = document.getElementById('repl');
-				document.getElementById('play-btn').addEventListener('click', () => replElement.editor.evaluate());
-				document.getElementById('stop-btn').addEventListener('click', () => replElement.editor.stop());
-
-				let code = await fetch(_strudelSongPath).then(r => r.text());
-
-				// @strudel/repl has no .osc support, so we register our custom .osc handler
-				code = "register('osc', window.danceOsc)\n\n" + code;
-
-				replElement.editor.setCode(code);
-				replElement.editor.editor.focus();
-			});
-
 
 		</script>
 
