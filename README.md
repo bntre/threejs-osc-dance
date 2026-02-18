@@ -116,6 +116,10 @@ The Three.js code is based on the following official examples:
 
   A rough and incomplete arrangement is used for the dance demonstration.
 
+### Related work
+- **LocoMotion** by David Ogborn https://github.com/dktr0/LocoMotion
+- See also https://en.wikipedia.org/wiki/Computer-generated_choreography
+
 ---
 
 ## Status
