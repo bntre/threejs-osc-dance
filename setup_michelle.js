@@ -71,7 +71,8 @@ export function createSetup() {
 			idleLegs:      { clip: 'SambaDance', cut: [7.325, 7.525, 8], beats: 2, tracks: LEGS, },
 		},
 		retarget: {
-			url: 'https://models.readyplayer.me/6953d570452afe2bbf4328ee.glb', // Michelle's fan, with yellow glasses
+			//url: 'https://models.readyplayer.me/6953d570452afe2bbf4328ee.glb', // Michelle's fan, with yellow glasses
+			url: '69428487d314d68f633f2565.glb', // readyplayer.me shut down
 			type: 'gltf',
 			options: { // for SkeletonUtils.retargetClip
 				hip: 'mixamorigHips',
